@@ -20,6 +20,8 @@
 #include "crazyflie_driver/Stop.h"
 #include "crazyflie_driver/Position.h"
 #include "crazyflie_driver/crtpPacket.h"
+#include "crazyflie_driver/MultiRangerAndFlow.h"
+
 #include "crazyflie_cpp/Crazyradio.h"
 #include "crazyflie_cpp/crtp.h"
 #include "std_srvs/Empty.h"
@@ -111,6 +113,7 @@ public:
     , m_enable_logging_pressure(enable_logging_pressure)
     , m_enable_logging_battery(enable_logging_battery)
     , m_enable_logging_packets(enable_logging_packets)
+    , m_enable_multiranger(true)
     , m_serviceEmergency()
     , m_serviceUpdateParams()
     , m_serviceSetGroupMask()
@@ -132,6 +135,7 @@ public:
     , m_pubPressure()
     , m_pubBattery()
     , m_pubRssi()
+    , m_pubMultiRanger()
     , m_sentSetpoint(false)
     , m_sentExternalPosition(false)
   {
@@ -174,6 +178,17 @@ private:
     float gyro_x;
     float gyro_y;
     float gyro_z;
+  } __attribute__((packed));
+
+  struct logMultiRangerAndFlowData {
+    float top;
+    float bottom;
+
+    float forwards;
+    float backwards;
+
+    float left;
+    float right;
   } __attribute__((packed));
 
   struct log2 {
@@ -384,6 +399,11 @@ void cmdPositionSetpoint(
     if (m_enable_logging_packets) {
       m_pubPackets = n.advertise<crazyflie_driver::crtpPacket>(m_tf_prefix + "/packets", 10);
     }
+
+    if(m_enable_multiranger) {
+      m_pubMultiRanger = n.advertise<crazyflie_driver::MultiRangerAndFlow>(m_tf_prefix + "/MultiRangerAndFlow", 10);
+    }
+
     m_pubRssi = n.advertise<std_msgs::Float32>(m_tf_prefix + "/rssi", 10);
 
     for (auto& logBlock : m_logBlocks)
@@ -444,6 +464,8 @@ void cmdPositionSetpoint(
 
     std::unique_ptr<LogBlock<logImu> > logBlockImu;
     std::unique_ptr<LogBlock<log2> > logBlock2;
+    std::unique_ptr<LogBlock<logMultiRangerAndFlowData>> logBlockMultiranger;
+
     std::vector<std::unique_ptr<LogBlockGeneric> > logBlocksGeneric(m_logBlocks.size());
     if (m_enableLogging) {
 
@@ -466,6 +488,21 @@ void cmdPositionSetpoint(
             {"gyro", "z"},
           }, cb));
         logBlockImu->start(1); // 10ms
+      }
+
+      if (m_enable_multiranger){
+        std::function<void(uint32_t, logMultiRangerAndFlowData*)> cb = std::bind(&CrazyflieROS::onMotionFlowData, this, std::placeholders::_1, std::placeholders::_2);
+
+        logBlockMultiranger.reset(new LogBlock<logMultiRangerAndFlowData>(
+          &m_cf,{
+            {"range", "up"},
+            {"range", "zrange"},
+            {"range", "front"},
+            {"range", "back"},
+            {"range", "left"},
+            {"range", "right"},
+          }, cb));
+        logBlockMultiranger->start(1);
       }
 
       if (   m_enable_logging_temperature
@@ -567,6 +604,31 @@ void cmdPositionSetpoint(
       msg.linear_acceleration.z = data->acc_z * 9.81;
 
       m_pubImu.publish(msg);
+    }
+  }
+
+  void onMotionFlowData(uint32_t time_in_ms, logMultiRangerAndFlowData *data){
+    if(m_enable_multiranger){
+      crazyflie_driver::MultiRangerAndFlow msg;
+
+      if(m_use_ros_time){
+        msg.header.stamp = ros::Time::now();
+      } else {
+        msg.header.stamp  = ros::Time(time_in_ms / 1000.0);
+      }
+
+      msg.header.frame_id = m_tf_prefix + "/base_link";
+
+      msg.top = data->top;
+      msg.bottom = data->bottom;
+
+      msg.forwards = data->forwards;
+      msg.backwards = data->backwards;
+
+      msg.left = data->left;
+      msg.right = data->right;
+
+      m_pubMultiRanger.publish(msg);
     }
   }
 
@@ -756,6 +818,7 @@ private:
   bool m_enable_logging_pressure;
   bool m_enable_logging_battery;
   bool m_enable_logging_packets;
+  bool m_enable_multiranger;
 
   ros::ServiceServer m_serviceEmergency;
   ros::ServiceServer m_serviceUpdateParams;
@@ -783,6 +846,9 @@ private:
   ros::Publisher m_pubBattery;
   ros::Publisher m_pubPackets;
   ros::Publisher m_pubRssi;
+
+  ros::Publisher m_pubMultiRanger;
+
   std::vector<ros::Publisher> m_pubLogDataGeneric;
 
   bool m_sentSetpoint, m_sentExternalPosition;
